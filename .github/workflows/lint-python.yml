@@ -1,0 +1,78 @@
+name: Python Lint (Ruff)
+
+on:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - ".github/workflows/lint-python.yml"
+      - "pyproject.toml"
+      - "ruff.toml"
+  push:
+    paths:
+      - "**/*.py"
+      - ".github/workflows/lint-python.yml"
+      - "pyproject.toml"
+      - "ruff.toml"
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ruff
+        run: python -m pip install --upgrade pip ruff
+
+      - name: Collect changed Python files
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          else
+            base_sha="${{ github.event.before }}"
+          fi
+
+          if [[ -z "$base_sha" || "$base_sha" == "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$(git rev-list --max-parents=0 HEAD)"
+          fi
+
+          mapfile -d '' files < <(git diff -z --name-only --diff-filter=ACMR "$base_sha" "${{ github.sha }}" -- '*.py')
+
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo "has_py_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\0' "${files[@]}" > changed_py_files.bin
+          echo "has_py_changes=true" >> "$GITHUB_OUTPUT"
+          echo "Detected ${#files[@]} changed Python files."
+
+      - name: Ruff lint on changed files (blocking)
+        if: steps.changed.outputs.has_py_changes == 'true'
+        run: xargs -0 ruff check --output-format=github --select E,F,I < changed_py_files.bin
+
+      - name: Ruff format check on changed files (blocking)
+        if: steps.changed.outputs.has_py_changes == 'true'
+        run: xargs -0 ruff format --check < changed_py_files.bin
+
+      - name: Full-repo lint report (non-blocking debt visibility)
+        continue-on-error: true
+        run: ruff check . --output-format=github --select E,F,I --statistics
+
+      - name: Full-repo format report (non-blocking debt visibility)
+        continue-on-error: true
+        run: ruff format . --check
